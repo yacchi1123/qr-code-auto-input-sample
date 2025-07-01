@@ -115,7 +115,7 @@ export default function Home() {
             <div className="relative">
               <video
                 id="video"
-                className="w-full rounded-lg"
+                className="w-full rounded-lg aspect-square object-cover"
                 autoPlay
                 playsInline
                 muted
