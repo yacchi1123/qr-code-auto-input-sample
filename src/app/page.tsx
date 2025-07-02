@@ -8,29 +8,66 @@ export default function Home() {
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState('');
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
   const startScanning = useCallback(async () => {
     setIsScanning(true);
     setError('');
     
     try {
-      if (!readerRef.current) {
-        readerRef.current = new BrowserMultiFormatReader();
+      // 毎回新しいreaderを作成して確実に背面カメラを選択
+      if (readerRef.current) {
+        readerRef.current.reset();
       }
+      readerRef.current = new BrowserMultiFormatReader();
 
       const videoInputDevices = await readerRef.current.listVideoInputDevices();
+      
+      // デバッグ用：利用可能なカメラデバイスをログ出力
+      console.log('利用可能なカメラデバイス:', videoInputDevices.map(device => ({
+        deviceId: device.deviceId,
+        label: device.label
+      })));
       
       if (videoInputDevices.length === 0) {
         throw new Error('カメラが見つかりません');
       }
 
-      // 背面カメラを優先的に選択
-      const selectedDevice = videoInputDevices.find(device => 
-        device.label.toLowerCase().includes('back') || 
-        device.label.toLowerCase().includes('rear')
-      ) || videoInputDevices[0];
+      // 背面カメラを確実に選択（より厳密な判定）
+      let targetDeviceId = selectedDeviceId;
+      
+      if (!targetDeviceId) {
+        const backCameraDevice = videoInputDevices.find(device => {
+          const label = device.label.toLowerCase();
+          return label.includes('back') || 
+                 label.includes('rear') || 
+                 label.includes('environment') ||
+                 label.includes('背面') ||
+                 // iOSの場合、backgroundという文字列が含まれることがある
+                 label.includes('background');
+        });
+        
+        // 背面カメラが見つからない場合は、前面カメラではないものを選択
+        const nonFrontCamera = videoInputDevices.find(device => {
+          const label = device.label.toLowerCase();
+          return !label.includes('front') && 
+                 !label.includes('user') && 
+                 !label.includes('face') &&
+                 !label.includes('前面');
+        });
+        
+        const selectedDevice = backCameraDevice || nonFrontCamera || videoInputDevices[videoInputDevices.length - 1];
+        targetDeviceId = selectedDevice.deviceId;
+        setSelectedDeviceId(targetDeviceId);
+        
+        // デバッグ用：選択されたカメラデバイスをログ出力
+        console.log('選択されたカメラデバイス:', {
+          deviceId: selectedDevice.deviceId,
+          label: selectedDevice.label
+        });
+      }
 
-      readerRef.current.decodeOnceFromVideoDevice(selectedDevice.deviceId, 'video')
+      readerRef.current.decodeOnceFromVideoDevice(targetDeviceId, 'video')
         .then((result) => {
           setCode(result.getText());
           setIsScanning(false);
@@ -45,11 +82,13 @@ export default function Home() {
       setError('カメラにアクセスできませんでした');
       setIsScanning(false);
     }
-  }, []);
+  }, [selectedDeviceId]);
 
   const stopScanning = useCallback(() => {
     if (readerRef.current) {
       readerRef.current.reset();
+      // iOSでの問題を避けるため、readerを完全に破棄
+      readerRef.current = null;
     }
     setIsScanning(false);
   }, []);
