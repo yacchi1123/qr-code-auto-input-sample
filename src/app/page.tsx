@@ -20,12 +20,6 @@ export default function Home() {
       }
       readerRef.current = new BrowserMultiFormatReader();
 
-      // まずカメラの権限を確認
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' } 
-      });
-      stream.getTracks().forEach(track => track.stop()); // 一旦停止
-
       // カメラデバイスを取得
       const videoInputDevices = await readerRef.current.listVideoInputDevices();
       
