@@ -8,22 +8,27 @@ export default function Home() {
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState('');
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
   const startScanning = useCallback(async () => {
     setIsScanning(true);
     setError('');
     
     try {
-      // 毎回新しいreaderを作成して確実に背面カメラを選択
+      // readerを初期化
       if (readerRef.current) {
         readerRef.current.reset();
       }
       readerRef.current = new BrowserMultiFormatReader();
 
+      // まずカメラの権限を確認
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' } 
+      });
+      stream.getTracks().forEach(track => track.stop()); // 一旦停止
+
+      // カメラデバイスを取得
       const videoInputDevices = await readerRef.current.listVideoInputDevices();
       
-      // デバッグ用：利用可能なカメラデバイスをログ出力
       console.log('利用可能なカメラデバイス:', videoInputDevices.map(device => ({
         deviceId: device.deviceId,
         label: device.label
@@ -33,62 +38,56 @@ export default function Home() {
         throw new Error('カメラが見つかりません');
       }
 
-      // 背面カメラを確実に選択（より厳密な判定）
-      let targetDeviceId = selectedDeviceId;
-      
-      if (!targetDeviceId) {
-        const backCameraDevice = videoInputDevices.find(device => {
-          const label = device.label.toLowerCase();
-          return label.includes('back') || 
-                 label.includes('rear') || 
-                 label.includes('environment') ||
-                 label.includes('背面') ||
-                 // iOSの場合、backgroundという文字列が含まれることがある
-                 label.includes('background');
-        });
-        
-        // 背面カメラが見つからない場合は、前面カメラではないものを選択
-        const nonFrontCamera = videoInputDevices.find(device => {
-          const label = device.label.toLowerCase();
-          return !label.includes('front') && 
-                 !label.includes('user') && 
-                 !label.includes('face') &&
-                 !label.includes('前面');
-        });
-        
-        const selectedDevice = backCameraDevice || nonFrontCamera || videoInputDevices[videoInputDevices.length - 1];
-        targetDeviceId = selectedDevice.deviceId;
-        setSelectedDeviceId(targetDeviceId);
-        
-        // デバッグ用：選択されたカメラデバイスをログ出力
-        console.log('選択されたカメラデバイス:', {
-          deviceId: selectedDevice.deviceId,
-          label: selectedDevice.label
-        });
-      }
+      // 背面カメラを探す
+      const backCamera = videoInputDevices.find(device => {
+        const label = device.label.toLowerCase();
+        return label.includes('back') || 
+               label.includes('rear') || 
+               label.includes('environment');
+      });
 
-      readerRef.current.decodeOnceFromVideoDevice(targetDeviceId, 'video')
+      // 背面カメラが見つからない場合は最後のデバイス（通常は背面カメラ）を使用
+      const selectedDevice = backCamera || videoInputDevices[videoInputDevices.length - 1];
+      
+      console.log('選択されたカメラ:', {
+        deviceId: selectedDevice.deviceId, 
+        label: selectedDevice.label
+      });
+
+      // カメラでスキャン開始
+      readerRef.current.decodeOnceFromVideoDevice(selectedDevice.deviceId, 'video')
         .then((result) => {
           setCode(result.getText());
           setIsScanning(false);
         })
         .catch((err) => {
-          console.log(err);
+          console.error('スキャンエラー:', err);
           setError('QRコード・バーコードを読み取れませんでした');
           setIsScanning(false);
         });
+        
     } catch (err) {
-      console.error(err);
-      setError('カメラにアクセスできませんでした');
+      console.error('カメラエラー:', err);
+      
+      // 権限エラーの場合は分かりやすいメッセージ
+      if (err instanceof DOMException) {
+        if (err.name === 'NotAllowedError') {
+          setError('カメラの使用が許可されていません。ブラウザでカメラの使用を許可してください。');
+        } else if (err.name === 'NotFoundError') {
+          setError('カメラが見つかりません。');
+        } else {
+          setError('カメラにアクセスできませんでした。');
+        }
+      } else {
+        setError('カメラにアクセスできませんでした。');
+      }
       setIsScanning(false);
     }
-  }, [selectedDeviceId]);
+  }, []);
 
   const stopScanning = useCallback(() => {
     if (readerRef.current) {
       readerRef.current.reset();
-      // iOSでの問題を避けるため、readerを完全に破棄
-      readerRef.current = null;
     }
     setIsScanning(false);
   }, []);
