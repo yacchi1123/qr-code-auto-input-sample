@@ -1,87 +1,172 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { BrowserMultiFormatReader } from '@zxing/library';
+import { Html5Qrcode } from 'html5-qrcode';
+
+interface CameraDevice {
+  id: string;
+  label: string;
+}
 
 export default function Home() {
   const [code, setCode] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState('');
-  const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
 
   const startScanning = useCallback(async () => {
     setIsScanning(true);
     setError('');
     
     try {
-      // readerを初期化
-      if (readerRef.current) {
-        readerRef.current.reset();
+      // まず、現在のプロトコルを確認
+      console.log('Current protocol:', window.location.protocol);
+      
+      // HTTPSでない場合は警告を表示
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setError('カメラアクセスにはHTTPS接続が必要です。localhostまたはHTTPS経由でアクセスしてください。');
+        setIsScanning(false);
+        return;
       }
-      readerRef.current = new BrowserMultiFormatReader();
 
-      // カメラデバイスを取得
-      const videoInputDevices = await readerRef.current.listVideoInputDevices();
+      // カメラデバイスを取得（権限確認も含む）
+      console.log('カメラデバイスの取得を開始...');
+      let cameras: CameraDevice[] = [];
       
-      console.log('利用可能なカメラデバイス:', videoInputDevices.map(device => ({
-        deviceId: device.deviceId,
-        label: device.label
-      })));
-      
-      if (videoInputDevices.length === 0) {
-        throw new Error('カメラが見つかりません');
+      try {
+        cameras = await Html5Qrcode.getCameras();
+        console.log('利用可能なカメラデバイス:', cameras);
+      } catch (cameraError) {
+        console.error('カメラデバイス取得エラー:', cameraError);
+        
+        // カメラが見つからない場合は、MediaDevicesAPIを直接使用して権限を確認
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream.getTracks().forEach(track => track.stop()); // すぐに停止
+            
+            // 権限が取得できたら、再度カメラデバイスを取得
+            cameras = await Html5Qrcode.getCameras();
+            console.log('権限取得後のカメラデバイス:', cameras);
+          } catch (permissionError) {
+            console.error('カメラ権限エラー:', permissionError);
+            if (permissionError instanceof Error) {
+              if (permissionError.name === 'NotAllowedError') {
+                setError('カメラの使用が許可されていません。ブラウザでカメラの使用を許可してください。');
+              } else if (permissionError.name === 'NotFoundError') {
+                setError('カメラが見つかりません。カメラが接続されているか確認してください。');
+              } else {
+                setError(`カメラアクセスエラー: ${permissionError.message}`);
+              }
+            } else {
+              setError('カメラにアクセスできませんでした。');
+            }
+            setIsScanning(false);
+            return;
+          }
+        } else {
+          setError('このブラウザはカメラアクセスをサポートしていません。');
+          setIsScanning(false);
+          return;
+        }
       }
+      
+      if (cameras.length === 0) {
+        setError('利用可能なカメラが見つかりません。');
+        setIsScanning(false);
+        return;
+      }
+
+      // Html5Qrcodeインスタンスを作成
+      if (html5QrCodeRef.current) {
+        try {
+          await html5QrCodeRef.current.stop();
+          html5QrCodeRef.current.clear();
+        } catch (e) {
+          console.log('既存のスキャナーの停止:', e);
+        }
+      }
+      
+      html5QrCodeRef.current = new Html5Qrcode('video');
 
       // 背面カメラを探す
-      const backCamera = videoInputDevices.find(device => {
-        const label = device.label.toLowerCase();
+      const backCamera = cameras.find((camera: CameraDevice) => {
+        const label = camera.label.toLowerCase();
         return label.includes('back') || 
                label.includes('rear') || 
                label.includes('environment');
       });
 
-      // 背面カメラが見つからない場合は最後のデバイス（通常は背面カメラ）を使用
-      const selectedDevice = backCamera || videoInputDevices[videoInputDevices.length - 1];
+      // 背面カメラが見つからない場合は最初のデバイスを使用
+      const selectedCamera = backCamera || cameras[0];
       
       console.log('選択されたカメラ:', {
-        deviceId: selectedDevice.deviceId, 
-        label: selectedDevice.label
+        id: selectedCamera.id, 
+        label: selectedCamera.label
       });
 
-      // カメラでスキャン開始
-      readerRef.current.decodeOnceFromVideoDevice(selectedDevice.deviceId, 'video')
-        .then((result) => {
-          setCode(result.getText());
-          setIsScanning(false);
-        })
-        .catch((err) => {
-          console.error('スキャンエラー:', err);
-          setError('QRコード・バーコードを読み取れませんでした');
-          setIsScanning(false);
-        });
-        
+      // QRコードスキャンの設定
+      const qrCodeSuccessCallback = (decodedText: string) => {
+        console.log('QRコードを読み取りました:', decodedText);
+        setCode(decodedText);
+        stopScanning();
+      };
+
+      const qrCodeErrorCallback = () => {
+        // エラーメッセージは大量に出力されるため、コンソールには出力しない
+      };
+
+      // スキャン開始
+      console.log('スキャンを開始します...');
+      await html5QrCodeRef.current.start(
+        selectedCamera.id,
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+          aspectRatio: 1.0,
+        },
+        qrCodeSuccessCallback,
+        qrCodeErrorCallback
+      );
+
+      console.log('スキャンが正常に開始されました');
+
     } catch (err) {
-      console.error('カメラエラー:', err);
+      console.error('予期しないエラー:', err);
       
-      // 権限エラーの場合は分かりやすいメッセージ
-      if (err instanceof DOMException) {
+      // より詳細なエラーメッセージ
+      if (err instanceof Error) {
         if (err.name === 'NotAllowedError') {
           setError('カメラの使用が許可されていません。ブラウザでカメラの使用を許可してください。');
         } else if (err.name === 'NotFoundError') {
-          setError('カメラが見つかりません。');
+          setError('カメラが見つかりません。カメラが接続されているか確認してください。');
+        } else if (err.name === 'NotReadableError') {
+          setError('カメラが他のアプリケーションで使用されています。他のアプリケーションを閉じてから再度お試しください。');
+        } else if (err.message.includes('Permission denied')) {
+          setError('カメラの使用が許可されていません。ブラウザでカメラの使用を許可してください。');
+        } else if (err.message.includes('HTTPS')) {
+          setError('カメラアクセスにはHTTPS接続が必要です。');
         } else {
-          setError('カメラにアクセスできませんでした。');
+          setError(`カメラアクセスエラー: ${err.message}`);
         }
       } else {
-        setError('カメラにアクセスできませんでした。');
+        setError('カメラにアクセスできませんでした。ブラウザを更新してもう一度お試しください。');
       }
       setIsScanning(false);
     }
   }, []);
 
-  const stopScanning = useCallback(() => {
-    if (readerRef.current) {
-      readerRef.current.reset();
+  const stopScanning = useCallback(async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        console.log('スキャンを停止します...');
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+        html5QrCodeRef.current = null;
+        console.log('スキャンが正常に停止されました');
+      } catch (err) {
+        console.error('スキャン停止エラー:', err);
+      }
     }
     setIsScanning(false);
   }, []);
@@ -145,19 +230,10 @@ export default function Home() {
         {isScanning && (
           <div className="mt-6">
             <div className="relative">
-              <video
+              <div
                 id="video"
-                className="w-full rounded-lg aspect-square object-cover"
-                autoPlay
-                playsInline
-                muted
+                className="w-full rounded-lg aspect-square [&>video]:w-full [&>video]:h-full [&>video]:object-cover [&>video]:rounded-lg"
               />
-              <div className="absolute inset-0 border-2 border-blue-500 rounded-lg pointer-events-none">
-                <div className="absolute top-4 left-4 w-6 h-6 border-l-4 border-t-4 border-blue-500"></div>
-                <div className="absolute top-4 right-4 w-6 h-6 border-r-4 border-t-4 border-blue-500"></div>
-                <div className="absolute bottom-4 left-4 w-6 h-6 border-l-4 border-b-4 border-blue-500"></div>
-                <div className="absolute bottom-4 right-4 w-6 h-6 border-r-4 border-b-4 border-blue-500"></div>
-              </div>
             </div>
             <p className="text-center text-sm text-gray-600 mt-2">
               QRコードまたはバーコードをカメラに向けてください
